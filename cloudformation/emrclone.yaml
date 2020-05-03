@@ -1,0 +1,180 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Best Practice EMR Cluster for Spark or S3 backed Hbase
+Parameters:
+  EMRClusterName:
+    Description: Name of the cluster
+    Type: String
+    Default: "MySparkCluster6.0"
+  KeyName:
+    Description: Must be an existing Keyname
+    Type: String
+    Default: "yourkey"
+  MasterInstanceType:
+    Description: Instance type to be used for the master instance.
+    Type: String
+    Default: m5.xlarge
+  CoreInstanceType:
+    Description: Instance type to be used for core instances.
+    Type: String
+    Default: m5.xlarge
+  NumberOfCoreInstances:
+    Description: Must be a valid number
+    Type: Number
+    Default: 2
+  SubnetID:
+    Description: Subnet to be used for the EMR cluster
+    Type: AWS::EC2::Subnet::Id
+  LogUri:
+    Description: Must be a valid S3 URL
+    Default: s3n://aws-logs-<ACCOUNT NUMBER-<REGION>/elasticmapreduce/
+    Type: String
+  ReleaseLabel:
+    Description: Must be a valid EMR release  version
+    Default: emr-6.0.0
+    Type: String
+
+Resources:
+  EMRCluster:
+    DependsOn:
+    - EMRClusterServiceRole
+    - EMRClusterinstanceProfileRole
+    - EMRClusterinstanceProfile
+    Type: AWS::EMR::Cluster
+    Properties:
+      Applications:
+      - Name: Ganglia
+      - Name: Spark
+      - Name: Hadoop
+      - Name: Hive
+      - Name: Hue
+      - Name: Livy
+      Configurations:
+      - Classification: emrfs-site
+        ConfigurationProperties:
+          fs.s3.consistent.retryPeriodSeconds: '10'
+          fs.s3.consistent: 'true'
+          fs.s3.consistent.retryCount: '5'
+          fs.s3.consistent.metadata.tableName: EmrFSMetadata
+      - Classification: spark-defaults
+        ConfigurationProperties:
+          spark.executor.extraClassPath: "/usr/lib/hadoop-lzo/lib/*:/usr/lib/hadoop/hadoop-aws.jar:/usr/share/aws/aws-java-sdk/*:/usr/share/aws/emr/emrfs/conf:/usr/share/aws/emr/emrfs/lib/*:/usr/share/aws/emr/emrfs/auxlib/*:/usr/share/aws/emr/goodies/lib/emr-spark-goodies.jar:/usr/share/aws/emr/security/conf:/usr/share/aws/emr/security/lib/*:/usr/share/aws/hmclient/lib/aws-glue-datacatalog-spark-client.jar:/usr/share/java/Hive-JSON-Serde/hive-openx-serde.jar:/usr/share/aws/sagemaker-spark-sdk/lib/sagemaker-spark-sdk.jar:/usr/share/aws/emr/s3select/lib/emr-s3-select-spark-connector.jar:/usr/share/aws/redshift/jdbc/RedshiftJDBC42.jar:/usr/share/java/mysql-connector-java.jar"
+          spark.driver.extraClassPath: "/usr/lib/hadoop-lzo/lib/*:/usr/lib/hadoop/hadoop-aws.jar:/usr/share/aws/aws-java-sdk/*:/usr/share/aws/emr/emrfs/conf:/usr/share/aws/emr/emrfs/lib/*:/usr/share/aws/emr/emrfs/auxlib/*:/usr/share/aws/emr/goodies/lib/emr-spark-goodies.jar:/usr/share/aws/emr/security/conf:/usr/share/aws/emr/security/lib/*:/usr/share/aws/hmclient/lib/aws-glue-datacatalog-spark-client.jar:/usr/share/java/Hive-JSON-Serde/hive-openx-serde.jar:/usr/share/aws/sagemaker-spark-sdk/lib/sagemaker-spark-sdk.jar:/usr/share/aws/emr/s3select/lib/emr-s3-select-spark-connector.jar:/usr/share/aws/redshift/jdbc/RedshiftJDBC42.jar:/usr/share/java/mysql-connector-java.jar"
+      - Classification: spark
+        ConfigurationProperties:
+          spark.jars.packages: org.apache.spark:spark-avro_2.11:2.4.0
+          spark.sql.legacy.replaceDatabricksSparkAvro.enabled: 'true'
+      - Classification: hive-site
+        ConfigurationProperties:
+          hive.metastore.client.factory.class: com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory
+      - Classification: spark-hive-site
+        ConfigurationProperties:
+          hive.metastore.client.factory.class: com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory
+      Instances:
+        Ec2KeyName:
+          Ref: KeyName
+        Ec2SubnetId:
+          Ref: SubnetID
+        MasterInstanceGroup:
+          EbsConfiguration:
+            EbsBlockDeviceConfigs:
+            - VolumeSpecification:
+                SizeInGB: 32
+                VolumeType: gp2
+              VolumesPerInstance: 2
+          InstanceCount: 1
+          InstanceType:
+            Ref: MasterInstanceType
+          Market: SPOT
+          Name: Master
+        CoreInstanceGroup:
+          EbsConfiguration:
+            EbsBlockDeviceConfigs:
+            - VolumeSpecification:
+                SizeInGB: 32
+                VolumeType: gp2
+              VolumesPerInstance: 2
+          InstanceCount:
+            Ref: NumberOfCoreInstances
+          InstanceType:
+            Ref: CoreInstanceType
+          Market: SPOT
+          Name: Core
+        TerminationProtected: false
+      BootstrapActions:
+        - Name: copyMySqlJar
+          ScriptBootstrapAction:
+            Path: "s3://<S3 BUCKET>/bootstrap/mysql-connector/mysql-connector.sh"
+      VisibleToAllUsers: true
+      JobFlowRole: !Ref EMRClusterinstanceProfile
+      ReleaseLabel: !Ref ReleaseLabel
+      LogUri: !Ref LogUri
+      Name: !Ref EMRClusterName
+      AutoScalingRole: EMR_AutoScaling_DefaultRole
+      ServiceRole: !Ref EMRClusterServiceRole
+      Tags:
+        -
+          Key: Name
+          Value: SparkEMR6
+
+  ClusterSteps:
+    Type: AWS::EMR::Step
+    Properties:
+      ActionOnFailure: CANCEL_AND_WAIT
+      HadoopJarStep:
+        Args:
+        - spark-submit
+        - "--deploy-mode"
+        - cluster
+        - "--master"
+        - yarn
+        - "--num-executors"
+        - '2'
+        - "--executor-cores"
+        - '2'
+        - "--executor-memory"
+        - 8g
+        - s3://<S3 BUCKET>/steps/SAMPLE_SCRIPT.py
+        Jar: command-runner.jar
+      Name: "Run <PySPARK SCRIPT>"
+      JobFlowId: !Ref EMRCluster
+
+  EMRClusterServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - elasticmapreduce.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceRole
+      Path: "/"
+
+  EMRClusterinstanceProfileRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceforEC2Role
+      Path: "/"
+
+  EMRClusterinstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+      - Ref: EMRClusterinstanceProfileRole
+Outputs: {}
